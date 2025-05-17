@@ -173,7 +173,7 @@ def traditional_controller(current_room_temp, user_target_temp, env_min_ac_set_t
     return np.array([action_ac_set_temp, action_fan_speed], dtype=np.float32)
 
 # --- (3) SAC 模型載入邏輯 ---
-MODEL_PATH = "C:/Users/User/final_v10.zip" 
+MODEL_PATH = "final_v10.zip" 
 USE_LEGACY_OBSERVATION_SHAPE_FOR_SAC = False 
 DEFAULT_FAN_FOR_LEGACY_ACTION = 0.1
 
