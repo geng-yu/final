@@ -252,7 +252,7 @@ def traditional_controller(current_room_temp,
 # --- 傳統控制器定義結束 ---
 
 # --- (3) SAC 模型載入邏輯 ---
-MODEL_PATH = r"C:\Users\User\final_v10.zip" # 使用原始字串確保路徑正確
+MODEL_PATH = r"final_v10.zip" # 使用原始字串確保路徑正確
 
 @st.cache_resource
 def load_sac_model_cached(path):
