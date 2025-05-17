@@ -66,7 +66,7 @@ class ACEnvWithDoors(gym.Env):
         self.ac_power_consumption_base_watt = 50
         self.ac_power_fan_coeff_watt = 200
         self.ac_power_cooling_coeff_watt = 500
-        self.time_step_seconds = 5 * 60
+        self.time_step_seconds = 2 * 60
 
         self.comfort_tolerance_C = 0.5
         self.comfort_reward_bonus = 1.0
