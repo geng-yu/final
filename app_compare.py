@@ -211,79 +211,56 @@ class ACEnvWithDoors(gym.Env):
 # --- (2) 修改後的傳統控制器邏輯 ---
 def traditional_controller(current_room_temp,
                            user_target_temp,
-                           current_ac_set_temp, # 這個參數在新的邏輯下可能不那麼直接被使用，但可以保留
+                           current_ac_set_temp, # 雖然新邏輯不太依賴它，但保持參數以兼容現有呼叫
                            env_min_ac_set_temp=16.0,
                            env_max_ac_set_temp=30.0,
-                           temp_adjust_unit=1.0, # 這個參數在新邏輯下可能用途改變或被固定值取代
-                           hysteresis_band=1.0): # 新增滯回帶寬度，例如上下各1度
+                           temp_adjust_unit=1.0, # 在此版本中影響較小
+                           hysteresis_band=1.0): # 例如目標25度，帶寬1度，則在24-26度間震盪
 
-    next_ac_set_temp = float(current_ac_set_temp) # 預設繼承上一步的設定
-    action_fan_speed = 0.1 # 預設一個較低的風速
+    next_ac_set_temp = float(current_ac_set_temp) # 預設值，會被覆蓋
+    action_fan_speed = 0.1 # 預設值，會被覆蓋
 
-    # 定義觸發強力製冷的上限和停止/減弱製冷的下限
-    upper_bound_trigger_cooling = user_target_temp + hysteresis_band # 例如 25 + 1 = 26 度
-    lower_bound_stop_cooling = user_target_temp - hysteresis_band  # 例如 25 - 1 = 24 度
+    upper_bound_trigger_cooling = user_target_temp + hysteresis_band
+    lower_bound_stop_cooling = user_target_temp - hysteresis_band
 
-    # 為了簡化，我們直接決定冷氣的開關狀態和強度，而不是漸進調整 current_ac_set_temp
-    # 當然，更細緻的控制可以結合漸進調整
+    # --- 調試用的 Print 語句 ---
+    # 確保 st.session_state.current_time_step_final 在其他地方已經被正確初始化和更新
+    current_sim_time_step = st.session_state.get('current_time_step_final', 'N/A_TimeStep')
+    print(f"[TradCtrl] Time: {current_sim_time_step}, "
+          f"Room: {current_room_temp:.2f}, Target: {user_target_temp:.2f}, LastSet: {current_ac_set_temp:.2f}, "
+          f"UpperB: {upper_bound_trigger_cooling:.2f}, LowerB: {lower_bound_stop_cooling:.2f}")
+    # --- 調試結束 ---
 
     if current_room_temp > upper_bound_trigger_cooling:
-        # 溫度太高，需要強力降溫
-        # 目標是降到 lower_bound_stop_cooling 或更低一點
-        next_ac_set_temp = env_min_ac_set_temp # 設定一個較低的溫度，例如16度
-        action_fan_speed = 1.0 # 最大風速
-        # print(f"[TradCtrl] Temp {current_room_temp:.2f} > UpperBound {upper_bound_trigger_cooling:.2f}. Cooling ON. Set: {next_ac_set_temp}, Fan: {action_fan_speed}")
+        # 溫度太高，超過上限 -> 強力製冷
+        next_ac_set_temp = env_min_ac_set_temp  # 例如設定到 16 度
+        action_fan_speed = 1.0  # 最大風速
+        print(f"[TradCtrl] Action: COOLING (Temp > Upper). Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
     elif current_room_temp < lower_bound_stop_cooling:
-        # 溫度已足夠低，可以停止或大幅減弱製冷
-        # 讓溫度自然回升或保持
-        next_ac_set_temp = user_target_temp # 或者 user_target_temp + hysteresis_band 甚至 env_max_ac_set_temp，以減少製冷
-        action_fan_speed = 0.1 # 最小風速 (或者0，如果允許且有意義)
-        # print(f"[TradCtrl] Temp {current_room_temp:.2f} < LowerBound {lower_bound_stop_cooling:.2f}. Cooling OFF/MIN. Set: {next_ac_set_temp}, Fan: {action_fan_speed}")
+        # 溫度太低，低於下限 -> 停止/最小化製冷，讓溫度回升
+        next_ac_set_temp = env_max_ac_set_temp  # 設定一個較高的溫度以確保不製冷，或者 user_target_temp
+                                             # 如果設為 user_target_temp 且風扇為0，也會停止製冷
+        action_fan_speed = 0.0  # 關閉風扇或設為對環境模型來說的最小有效值
+        print(f"[TradCtrl] Action: STOP/MIN COOLING (Temp < Lower). Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
     else:
-        # 溫度在 [lower_bound_stop_cooling, upper_bound_trigger_cooling] 之間
-        # 這裡的策略可以多樣：
-        # 1. 保持上一個動作 (需要 session_state 來記錄上一個Trad的動作)
-        # 2. 或者，如果我們希望它在降溫後能更快回升，可以設定一個較高的ac_set_temp
-        #    如果我們希望它在升溫後能更快降溫，可以設定一個較低的ac_set_temp
-        # 為了產生明確的 "降到24，升到26，再降到24" 的效果，
-        # 當溫度從高處降下來進入這個區間時，我們應該是處於 "Cooling ON" 的狀態延續，直到碰到 lower_bound
-        # 當溫度從低處升上來進入這個區間時，我們應該是處於 "Cooling OFF/MIN" 的狀態延續，直到碰到 upper_bound
-        # 這需要判斷溫度變化的趨勢或前一個狀態。
+        # 溫度在滯回區間 [lower_bound_stop_cooling, upper_bound_trigger_cooling] 內
+        # 為了產生震盪，我們讓它 "撞向下一個邊界"
+        # 如果當前溫度高於 user_target_temp，表示我們應該處於 "降溫" 階段，繼續強力製冷
+        # 如果當前溫度低於 user_target_temp (或等於)，表示我們應該處於 "回溫" 階段，繼續不製冷
+        if current_room_temp > user_target_temp:
+            next_ac_set_temp = env_min_ac_set_temp # 繼續強力製冷
+            action_fan_speed = 1.0
+            print(f"[TradCtrl] Action: IN BAND, CONTINUE COOLING (Temp > Target). Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
+        else: # current_room_temp <= user_target_temp
+            next_ac_set_temp = env_max_ac_set_temp # 繼續不製冷/最小製冷，讓溫度上升
+            action_fan_speed = 0.0
+            print(f"[TradCtrl] Action: IN BAND, CONTINUE STOP/MIN (Temp <= Target). Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
-        # 一個簡化的處理方式：如果處於中間地帶，且前一個動作是強力製冷，則繼續強力製冷；
-        # 如果前一個動作是停止製冷，則繼續停止。
-        # 但為了更容易產生您要的震盪，我們可以在這個區間內採用一個相對 "不作為" 或 "弱維持" 的策略，
-        # 依賴於製冷/停止製冷的邊界條件來驅動變化。
-
-        # 假設我們根據 current_ac_set_temp 來判斷之前的狀態：
-        if current_ac_set_temp < user_target_temp: # 暗示之前可能在強力製冷
-             next_ac_set_temp = env_min_ac_set_temp # 繼續強力製冷，直到撞到下限
-             action_fan_speed = 1.0
-             # print(f"[TradCtrl] Temp {current_room_temp:.2f} in deadband, was cooling. Continue. Set: {next_ac_set_temp}, Fan: {action_fan_speed}")
-        else: # 暗示之前可能已停止或減弱製冷
-             next_ac_set_temp = user_target_temp # 維持目標或略高
-             action_fan_speed = 0.1
-             # print(f"[TradCtrl] Temp {current_room_temp:.2f} in deadband, was NOT cooling hard. Maintain. Set: {next_ac_set_temp}, Fan: {action_fan_speed}")
-        
-        # --- 或者更簡單的震盪策略，不依賴 current_ac_set_temp ---
-        # 如果溫度剛好在目標附近，但未觸發強開/強關，可以讓它 "漂移" 或微弱調整
-        # if current_room_temp > user_target_temp: # 略高於目標
-        #     next_ac_set_temp = user_target_temp - 0.5 # 試圖輕微拉回
-        #     action_fan_speed = 0.3
-        # else: # 略低於目標
-        #     next_ac_set_temp = user_target_temp + 0.5
-        #     action_fan_speed = 0.1
-
-
-    # 確保在環境的限制範圍內
+    # 最後確保輸出的動作在環境的有效範圍內
     next_ac_set_temp = np.clip(next_ac_set_temp, env_min_ac_set_temp, env_max_ac_set_temp)
-    # next_ac_set_temp = round(next_ac_set_temp / temp_adjust_unit) * temp_adjust_unit # 如果還想保持調整單位的倍數
-
-    # 這裡的 fan_levels_map 在新邏輯下可能需要重新思考或直接使用 action_fan_speed
-    # fan_speed = fan_levels_map.get(action_fan_level, 0.1) # 如果還用 fan_level
-    fan_speed = np.clip(action_fan_speed, 0.0, 1.0) # 直接使用計算出的風速
+    fan_speed = np.clip(action_fan_speed, 0.0, 1.0) # 假設環境能處理 fan_speed = 0.0
 
     return np.array([next_ac_set_temp, fan_speed], dtype=np.float32)
 # --- 傳統控制器定義結束 ---
