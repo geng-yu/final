@@ -211,68 +211,59 @@ class ACEnvWithDoors(gym.Env):
 # --- (2) 修改後的傳統控制器邏輯 ---
 def traditional_controller(current_room_temp,
                            user_target_temp,
-                           current_ac_set_temp, # 雖然此版本不太用，但保留以兼容
+                           current_ac_set_temp, # 用於記錄上一步模式的推斷
                            env_min_ac_set_temp=16.0,
                            env_max_ac_set_temp=30.0,
-                           hysteresis_band=1.0): # 控制震盪的上下邊界
+                           hysteresis_band=1.0): # 例如目標25，則在24-26度間震盪
 
-    # 1. 定義風扇段位 (這裡簡化為主要用到的幾個級別)
-    # FAN_OFF: 用於停止製冷，讓溫度回升
-    # FAN_MAX: 用於強力製冷
-    FAN_OFF_SPEED = 0.0
+    # 風扇設定 (為了高耗能，即使在 "關閉" 製冷時也可能開一點風)
+    FAN_OFF_INEFFICIENT_SPEED = 0.1 # 即使停止製冷，也留一點風扇運轉，增加耗能
     FAN_MAX_SPEED = 1.0
-    # 如果您仍想用5段，可以保留 fan_speed_map，但在這裡主要用最強和最弱
 
-    next_ac_set_temp = float(current_ac_set_temp) # 預設繼承，但會被覆蓋
-    action_fan_speed = FAN_OFF_SPEED # 預設風扇關閉
+    next_ac_set_temp = float(current_ac_set_temp)
+    action_fan_speed = FAN_OFF_INEFFICIENT_SPEED # 預設
 
-    upper_trigger = user_target_temp + hysteresis_band # 例如 25 + 1 = 26
-    lower_trigger = user_target_temp - hysteresis_band # 例如 25 - 1 = 24
+    upper_trigger = user_target_temp + hysteresis_band
+    lower_trigger = user_target_temp - hysteresis_band
 
     # --- 調試 Print ---
     current_sim_time_step = st.session_state.get('current_time_step_final', 'N/A_TimeStep')
-    print(f"[TradCtrl] Time: {current_sim_time_step}, Room: {current_room_temp:.2f}, Target: {user_target_temp:.2f}, "
-          f"LastSet: {current_ac_set_temp:.2f}, UpperTrig: {upper_trigger:.2f}, LowerTrig: {lower_trigger:.2f}")
+    print(f"[TradCtrl_HighEnergy] Time: {current_sim_time_step}, Room: {current_room_temp:.2f}, Target: {user_target_temp:.2f}, "
+          f"LastSet: {current_ac_set_temp:.2f}, UpperTrig: {upper_trigger:.2f}, LowerTrig: {lower_trigger:.2f}, "
+          f"CurrentMode: {st.session_state.get('trad_control_mode_he', 'OFF')}") # HE for High Energy
 
     # 核心滯回邏輯
-    # 狀態1: 溫度過高，需要開啟強力製冷
     if current_room_temp >= upper_trigger:
-        next_ac_set_temp = env_min_ac_set_temp  # 強力製冷，例如設到16度
-        action_fan_speed = FAN_MAX_SPEED
-        print(f"[TradCtrl] State: OVERHEAT -> ACTION: Force Cool. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
-        st.session_state['trad_control_mode'] = 'COOLING' # 記錄當前模式
+        # 溫度過高 -> 強力製冷
+        next_ac_set_temp = env_min_ac_set_temp  # 設到最低溫
+        action_fan_speed = FAN_MAX_SPEED     # 最大風扇
+        st.session_state['trad_control_mode_he'] = 'COOLING'
+        print(f"[TradCtrl_HighEnergy] State: OVERHEAT -> ACTION: Force Cool. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
-    # 狀態2: 溫度過低，需要關閉製冷讓溫度回升
     elif current_room_temp <= lower_trigger:
-        next_ac_set_temp = env_max_ac_set_temp  # 關閉製冷 (設定溫度調高避免製冷)
-        action_fan_speed = FAN_OFF_SPEED
-        print(f"[TradCtrl] State: TOO COLD -> ACTION: Stop Cool. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
-        st.session_state['trad_control_mode'] = 'OFF' # 記錄當前模式
+        # 溫度過低 -> 嘗試讓溫度回升，但保持一點風扇以增加耗能
+        next_ac_set_temp = env_max_ac_set_temp  # 設到最高溫避免製冷
+        action_fan_speed = FAN_OFF_INEFFICIENT_SPEED # 保持一點風扇
+        st.session_state['trad_control_mode_he'] = 'OFF_INEFFICIENT'
+        print(f"[TradCtrl_HighEnergy] State: TOO COLD -> ACTION: Inefficient Off. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
-    # 狀態3: 溫度在滯回區間內，根據上一個主要模式決定
-    else: # lower_trigger < current_room_temp < upper_trigger
-        last_mode = st.session_state.get('trad_control_mode', 'OFF') # 獲取上一個模式，預設為'OFF'
+    else: # lower_trigger < current_room_temp < upper_trigger (在滯回區間內)
+        last_mode = st.session_state.get('trad_control_mode_he', 'OFF_INEFFICIENT')
         if last_mode == 'COOLING':
-            # 如果之前在製冷，就繼續製冷，直到撞到下限
+            # 如果之前在製冷，繼續強力製冷
             next_ac_set_temp = env_min_ac_set_temp
             action_fan_speed = FAN_MAX_SPEED
-            print(f"[TradCtrl] State: IN BAND (was COOLING) -> ACTION: Continue Cool. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
-        else: # last_mode == 'OFF' (或任何非COOLING的狀態)
-            # 如果之前是關閉的，就繼續關閉，讓溫度繼續上升，直到撞到上限
+            print(f"[TradCtrl_HighEnergy] State: IN BAND (was COOLING) -> ACTION: Continue Cool. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
+        else: # last_mode == 'OFF_INEFFICIENT'
+            # 如果之前是 "關閉"（但仍有風扇），繼續保持這種低效狀態
             next_ac_set_temp = env_max_ac_set_temp
-            action_fan_speed = FAN_OFF_SPEED
-            print(f"[TradCtrl] State: IN BAND (was OFF) -> ACTION: Continue Off. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
+            action_fan_speed = FAN_OFF_INEFFICIENT_SPEED
+            print(f"[TradCtrl_HighEnergy] State: IN BAND (was OFF_INEFFICIENT) -> ACTION: Continue Inefficient Off. Set: {next_ac_set_temp:.1f}, Fan: {action_fan_speed:.1f}")
 
     next_ac_set_temp = np.clip(next_ac_set_temp, env_min_ac_set_temp, env_max_ac_set_temp)
-    fan_speed_actual = np.clip(action_fan_speed, 0.0, 1.0)
+    fan_speed_actual = np.clip(action_fan_speed, 0.0, 1.0) # 確保風速在0-1之間
 
-    # 如果您仍想嚴格控制溫度調整為1度，這裡的邏輯就不太適用了，
-    # 因為bang-bang控制是直接跳到極端值。
-    # 如果必須是1度調整，則上面的 next_ac_set_temp 邏輯需要改成 current_ac_set_temp +/- 1.0，
-    # 但那樣就回到了漸進調整，可能又會平滑。
-    # 為了產生您期望的震盪，直接跳到極端設定可能更有效。
-
-    print(f"[TradCtrl] Final Output - SetTemp: {next_ac_set_temp:.1f}, FanSpeed: {fan_speed_actual:.2f}")
+    print(f"[TradCtrl_HighEnergy] Final Output - SetTemp: {next_ac_set_temp:.1f}, FanSpeed: {fan_speed_actual:.2f}")
     return np.array([next_ac_set_temp, fan_speed_actual], dtype=np.float32)
 # --- 傳統控制器定義結束 ---
 
