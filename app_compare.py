@@ -479,7 +479,7 @@ with st.sidebar:
         on_change=lambda: setattr(st.session_state, 'current_num_open_doors_final', st.session_state.slider_num_open_doors_final) if 'initialized_final' in st.session_state and st.session_state.initialized_final else None
     )
     num_steps_final_input = st.number_input(
-        "單次執行步數", min_value=1, max_value=200,
+        "單次執行步數", min_value=1, max_value=1000,
         value=st.session_state.get("num_steps_to_run_input_final", default_sim_steps),
         step=1, key="num_steps_to_run_input_final"
     )
